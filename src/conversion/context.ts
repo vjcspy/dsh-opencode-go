@@ -5,7 +5,7 @@
  */
 
 import { brandString } from '@deepseek-ai/dsh-brand'
-import { contentHasImage, LlmError, offloadedImageText, requestImageHandleText } from '@deepseek-ai/dsh-llm'
+import { LlmError, offloadedImageText, requestImageHandleText } from '@deepseek-ai/dsh-llm'
 import type { ContentBlock, GenerateOptions, ImageAttachmentAccessResolver, Message, RequestMessage, ToolCallId } from '@deepseek-ai/dsh-llm'
 import type {
   AttachmentId,
@@ -28,10 +28,59 @@ function flattenText(message: RequestMessage): string {
     .join('')
 }
 
+/**
+ * Pre-0.1.7 hosts carry a tool result as a `tool-result` block nested in user
+ * content; 0.1.7 replaced it with its own `tool`-role message. The block type
+ * is absent from the current `ContentBlock` union, so it is read structurally
+ * to keep one adapter working across both host generations.
+ */
+interface LegacyToolResultBlock {
+  toolCallId: ToolCallId
+  content: readonly ContentBlock[]
+  isError?: boolean
+}
 
-/** Flatten text inside one tool result. DSH 0.1.7 carries the result as its own `tool` message, so nested results no longer occur. */
+/** Read one block as a pre-0.1.7 nested tool result, or `undefined` when it is not one. */
+function legacyToolResult(block: ContentBlock): LegacyToolResultBlock | undefined {
+  return (block as { type: string }).type === 'tool-result'
+    ? block as unknown as LegacyToolResultBlock
+    : undefined
+}
+
+/** Every pre-0.1.7 nested tool result in one content list, in order. */
+function legacyToolResults(blocks: readonly ContentBlock[]): LegacyToolResultBlock[] {
+  const results: LegacyToolResultBlock[] = []
+  for (const block of blocks) {
+    const result = legacyToolResult(block)
+    if (result) results.push(result)
+  }
+  return results
+}
+
+/**
+ * Whether content carries an image, descending into pre-0.1.7 nested tool
+ * results. The current host's `contentHasImage` only scans the top level,
+ * because 0.1.7 never nests a result; this adapter still has to see one.
+ */
+function contentHasImageDeep(blocks: readonly ContentBlock[]): boolean {
+  for (const block of blocks) {
+    const result = legacyToolResult(block)
+    if (result) {
+      if (contentHasImageDeep(result.content)) return true
+      continue
+    }
+    if (block.type === 'image') return true
+  }
+  return false
+}
+
+/** Flatten text inside one tool result, descending into nested results on pre-0.1.7 hosts. */
 function toolResultText(blocks: readonly ContentBlock[]): string {
-  return blocks.map(block => block.type === 'text' ? block.text : '').join('')
+  return blocks.map(block => {
+    const result = legacyToolResult(block)
+    if (result) return toolResultText(result.content)
+    return block.type === 'text' ? block.text : ''
+  }).join('')
 }
 
 interface ToolMessage {
@@ -46,10 +95,15 @@ function toolMessage(message: RequestMessage): ToolMessage | undefined {
   return message as unknown as ToolMessage
 }
 
-/** Reject image roles that pi-ai cannot replay before request-size offloading can replace them. */
-function assertSupportedImageRoles(messages: readonly RequestMessage[]): void {
+/** Reject unsupported roles, tool-change blocks, and image roles before replay or image offloading. */
+function assertSupportedHistory(messages: readonly RequestMessage[]): void {
   for (const message of messages) {
-    if (message.role !== 'user' && !toolMessage(message) && contentHasImage(message.content)) {
+    // Developer history is persisted for V4; provider serialization is intentionally deferred.
+    if (message.role === 'developer') throw new LlmError('Developer messages are not supported yet', 'UNSUPPORTED_CONTENT')
+    if (message.content.some(block => block.type === 'tool-addition' || block.type === 'tool-removal')) {
+      throw new LlmError('Tool-change blocks require developer role', 'UNSUPPORTED_CONTENT')
+    }
+    if (message.role !== 'user' && !toolMessage(message) && contentHasImageDeep(message.content)) {
       throw new LlmError(
         `pi-ai cannot represent an image in an in-history ${message.role} message`,
         'UNSUPPORTED_CONTENT',
@@ -65,11 +119,27 @@ async function userContent(
 ): Promise<string | (TextContent | ImageContent)[]> {
   const content: (TextContent | ImageContent)[] = []
   for (const block of blocks) {
+    const legacy = legacyToolResult(block)
+    if (legacy) {
+      const nested = await userContent(legacy.content, requestImages, resolveImageAccess)
+      if (typeof nested === 'string') {
+        if (nested.length > 0) content.push({ type: 'text', text: nested })
+      } else {
+        content.push(...nested)
+      }
+      continue
+    }
     switch (block.type) {
       case 'text':
         if (block.text.length > 0) content.push({ type: 'text', text: block.text })
         break
       case 'image': {
+        if (block.offloaded === true) {
+          // The current host only replaces top-level offloaded images; a nested
+          // one carried over from a pre-0.1.7 log reaches the adapter intact.
+          content.push({ type: 'text', text: offloadedImageText(block.attachment, resolveImageAccess(block.attachment)) })
+          break
+        }
         const version = requestImages.get(block.attachment.attachmentId) as RequestImageAttachment
         content.push({
           type: 'text',
@@ -96,6 +166,11 @@ function collectImageRefs(
   refs: Map<AttachmentId, ImageAttachmentRef>,
 ): void {
   for (const block of blocks) {
+    const legacy = legacyToolResult(block)
+    if (legacy) {
+      collectImageRefs(legacy.content, refs)
+      continue
+    }
     if (block.type === 'image' && block.offloaded !== true) refs.set(block.attachment.attachmentId, block.attachment)
   }
 }
@@ -120,6 +195,10 @@ async function prepareRequestImages(
 }
 
 function toolsOf(options: GenerateOptions): PiTool[] | undefined {
+  // Deferred definitions are persisted for V4; provider loading is intentionally deferred.
+  if (options.tools?.some(tool => tool.deferLoading === true)) {
+    throw new LlmError('Deferred tool loading is not supported yet', 'UNSUPPORTED_CONTENT')
+  }
   return options.tools?.map(tool => ({
     name: tool.name,
     description: tool.description,
@@ -176,12 +255,12 @@ function appendAssistant(
 }
 
 function textOnlyContext(options: GenerateOptions, onReplayDegrade?: (reason: string) => void): PiContext {
-  assertSupportedImageRoles(options.messages)
+  assertSupportedHistory(options.messages)
   const split = splitSystemPrompt(options)
   const toolNames = new Map<ToolCallId, string>()
   const messages: PiMessage[] = []
   for (const message of split.messages) {
-    if (contentHasImage(message.content)) {
+    if (contentHasImageDeep(message.content)) {
       throw new LlmError('pi-ai image conversion requires the durable attachment service', 'UNSUPPORTED_CONTENT')
     }
     const tool = toolMessage(message)
@@ -205,9 +284,23 @@ function textOnlyContext(options: GenerateOptions, onReplayDegrade?: (reason: st
       continue
     }
     const text = flattenText(message)
-    // DSH 0.1.7 carries every tool result as its own `tool`-role message, so a
-    // user message here is text and images only.
-    if (text.length > 0 || message.content.length === 0) messages.push({ role: 'user', content: text, timestamp: 0 })
+    // 0.1.7 carries each tool result as its own `tool`-role message; on older
+    // hosts the user message also holds nested `tool-result` blocks.
+    const results = legacyToolResults(message.content)
+    if (text.length > 0 || results.length === 0) messages.push({ role: 'user', content: text, timestamp: 0 })
+    for (const result of results) {
+      messages.push({
+        role: 'toolResult',
+        toolCallId: result.toolCallId,
+        toolName: toolNames.get(result.toolCallId) ?? 'unknown',
+        content: [{
+          type: 'text',
+          text: toolResultText(result.content) || '(no output)',
+        }],
+        isError: result.isError ?? false,
+        timestamp: 0,
+      })
+    }
   }
   return piContext(split.systemPrompt, options, messages)
 }
@@ -295,7 +388,7 @@ async function toPiContextWithImages(
     maxPixels: DEFAULT_REQUEST_IMAGE_PIXEL_BUDGET,
     maxBytes: DEFAULT_REQUEST_IMAGE_MAX_BYTES,
   }
-  assertSupportedImageRoles(options.messages)
+  assertSupportedHistory(options.messages)
   const split = splitSystemPrompt(options)
   const projection = {
     maxBytes: maxRequestImageBytes,
@@ -335,11 +428,26 @@ async function toPiContextWithImages(
       appendAssistant(message, messages, toolNames, onReplayDegrade)
       continue
     }
-    // user role: text and images. DSH 0.1.7 carries every tool result as its
-    // own `tool`-role message, handled above.
-    const content = await userContent(message.content, requestImages, resolveImageAccess)
-    if (content.length > 0 || message.content.length === 0) {
+    // user role: text and images, plus nested `tool-result` blocks on older
+    // hosts (each result becomes its own `toolResult` message).
+    const regular = message.content.filter(block => legacyToolResult(block) === undefined)
+    const content = await userContent(regular, requestImages, resolveImageAccess)
+    const results = legacyToolResults(message.content)
+    if (content.length > 0 || results.length === 0) {
       messages.push({ role: 'user', content, timestamp: 0 })
+    }
+    for (const result of results) {
+      const resultContent = await userContent(result.content, requestImages, resolveImageAccess)
+      messages.push({
+        role: 'toolResult',
+        toolCallId: result.toolCallId,
+        toolName: toolNames.get(result.toolCallId) ?? 'unknown',
+        content: typeof resultContent === 'string'
+          ? [{ type: 'text', text: resultContent || '(no output)' }]
+          : resultContent,
+        isError: result.isError ?? false,
+        timestamp: 0,
+      })
     }
   }
 
