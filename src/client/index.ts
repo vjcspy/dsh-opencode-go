@@ -63,8 +63,16 @@ export function apply(ctx: ClientContext): void {
     // Profile forms use the bundle entry id, not the legacy settings namespace.
     mountSettings(child, forms.get<OpencodeGoSettings>('opencode-go'), modelsReady)
   })
+  // Legacy hosts (0.1.5/0.1.6/0.1.7-alpha) register a settings scope instead of
+  // a profile form. Reached structurally: rc.1 removed the service, so the
+  // typed Context no longer declares it.
   ctx.inject(['settingsScope', 'remote.opencodeGoModels'], child => {
-    mountSettings(child, child.settingsScope.bind({
+    const legacy = child as unknown as {
+      settingsScope: {
+        bind<T>(spec: { namespace: string; decode: (section: unknown) => T | undefined }): SettingsScope<T>
+      }
+    }
+    mountSettings(child, legacy.settingsScope.bind<OpencodeGoSettings>({
       namespace: 'llm-opencode-go',
       decode: (section): OpencodeGoSettings | undefined =>
         typeof section === 'object' && section !== null ? section as OpencodeGoSettings : undefined,

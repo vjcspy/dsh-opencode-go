@@ -1,6 +1,6 @@
 /** Bridge the request-local image policy in DSH 0.1.5 and durable offloading in 0.1.6. */
 import * as llm from '@deepseek-ai/dsh-llm'
-import type { Message } from '@deepseek-ai/dsh-llm'
+import type { RequestMessage } from '@deepseek-ai/dsh-llm'
 import type { ImageAttachmentRef } from '@deepseek-ai/dsh-attachment'
 
 interface ImageProjectionPolicy {
@@ -17,13 +17,13 @@ const api: Partial<Pick<typeof llm,
   'requiredImageOffload' | 'projectOffloadedImages' | 'IMAGE_OFFLOAD_REQUIRED_CODE'
 >> & {
   offloadRequestImagesWithPolicy?: (
-    messages: readonly Message[],
+    messages: readonly RequestMessage[],
     policy: Omit<ImageProjectionPolicy, 'exact'> & { representation: 'base64'; byteQuantum: number },
-  ) => readonly Message[]
+  ) => readonly RequestMessage[]
 } = llm
 
 /** Preserve the host generation's image policy, using estimates first and exact sizes second. */
-export function projectRequestImages(messages: readonly Message[], policy: ImageProjectionPolicy): readonly Message[] {
+export function projectRequestImages(messages: readonly RequestMessage[], policy: ImageProjectionPolicy): readonly RequestMessage[] {
   if (api.requiredImageOffload !== undefined && api.projectOffloadedImages !== undefined) {
     // New hosts own the durable offloaded marks. The adapter must neither
     // discard images from estimates nor replace the host's retry protocol.

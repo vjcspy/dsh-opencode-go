@@ -20,9 +20,13 @@ import type { en } from './locales.ts'
 import css from './Section.module.css'
 
 // 0.1.7 names icons by stroke weight; older hosts name them by pixel size.
-const ChevronDown = (primitives as typeof primitives & {
-  IconChevronDownOutlineRegular?: typeof primitives.IconChevronDownOutline14
-}).IconChevronDownOutlineRegular ?? primitives.IconChevronDownOutline14
+const primitivesCompat = primitives as typeof primitives & {
+  IconChevronDownOutlineRegular?: typeof primitives.IconChevronDownOutlineMedium
+  IconChevronDownOutline14?: typeof primitives.IconChevronDownOutlineMedium
+}
+const ChevronDown = primitivesCompat.IconChevronDownOutlineRegular
+  ?? primitivesCompat.IconChevronDownOutline14
+  ?? primitives.IconChevronDownOutlineMedium
 
 export type { OpencodeGoSectionState } from './section-controller.ts'
 

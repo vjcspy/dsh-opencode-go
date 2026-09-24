@@ -203,30 +203,12 @@ export function apply(ctx: Context, raw?: OpencodeGoConfig | LiveConfig): void {
     undiscover()
     /* v8 ignore stop */
   })
-  // Settings-backed configuration: the section starts from the cordis.yml
-  // entry as its base layer and follows the settings provider while attached.
-  // Without a settings provider the plugin still loads and serves the entry.
+  // Settings-backed configuration. rc.1 projects the plugin's volatile Config
+  // fields as its own entry form and commits a write into the live references;
+  // this plugin ships no generated page, so it opts out of one. Without a
+  // settings provider the plugin still loads and serves the entry.
   ctx.inject(['settings'], (settingsCtx) => {
-    if ('configure' in settingsCtx.settings) {
-      const settings = settingsCtx.settings as unknown as {
-        configure(policy: { auto: boolean }, owner: typeof ctx.fiber): () => void
-      }
-      settingsCtx.effect(() => settings.configure({ auto: false }, ctx.fiber))
-      return
-    }
-    settingsCtx.settings.installSection(ctx, NS, PlainConfig, entry, {
-      validate: (value) => {
-        assertBaseURL(value.baseURL)
-      },
-      setSource: (source) => {
-        current = source
-      },
-      onChange: () => {
-        // The registered route set follows the credential the section names;
-        // every other fact is per-request and reaches it through `current`.
-        syncRoute()
-      },
-    })
+    settingsCtx.effect(() => settingsCtx.settings.configure({ auto: false }, ctx.fiber))
   })
   // Validate before 0.1.7 persists a profile edit, then follow committed refs.
   ctx.on('internal/config', function (_raw, next) {

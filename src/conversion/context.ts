@@ -6,7 +6,7 @@
 
 import { brandString } from '@deepseek-ai/dsh-brand'
 import { contentHasImage, LlmError, offloadedImageText, requestImageHandleText } from '@deepseek-ai/dsh-llm'
-import type { ContentBlock, GenerateOptions, ImageAttachmentAccessResolver, Message, ToolCallId } from '@deepseek-ai/dsh-llm'
+import type { ContentBlock, GenerateOptions, ImageAttachmentAccessResolver, Message, RequestMessage, ToolCallId } from '@deepseek-ai/dsh-llm'
 import type {
   AttachmentId,
   AttachmentStore,
@@ -21,7 +21,7 @@ import { DEFAULT_REQUEST_IMAGE_MAX_BYTES, DEFAULT_REQUEST_IMAGE_PIXEL_BUDGET } f
 import { projectRequestImages } from './image-offload.ts'
 
 /** Join the text blocks of a harness message. */
-function flattenText(message: Message): string {
+function flattenText(message: RequestMessage): string {
   return message.content
     .filter(block => block.type === 'text')
     .map(block => block.text)
@@ -29,11 +29,9 @@ function flattenText(message: Message): string {
 }
 
 
-/** Flatten text recursively inside one tool result. */
+/** Flatten text inside one tool result. DSH 0.1.7 carries the result as its own `tool` message, so nested results no longer occur. */
 function toolResultText(blocks: readonly ContentBlock[]): string {
-  return blocks.map(block => block.type === 'text'
-    ? block.text
-    : block.type === 'tool-result' ? toolResultText(block.content) : '').join('')
+  return blocks.map(block => block.type === 'text' ? block.text : '').join('')
 }
 
 interface ToolMessage {
@@ -43,13 +41,13 @@ interface ToolMessage {
 }
 
 /** DSH 0.1.7 moved tool results out of user content into their own role. */
-function toolMessage(message: Message): ToolMessage | undefined {
+function toolMessage(message: RequestMessage): ToolMessage | undefined {
   if ((message as { role: string }).role !== 'tool') return undefined
   return message as unknown as ToolMessage
 }
 
 /** Reject image roles that pi-ai cannot replay before request-size offloading can replace them. */
-function assertSupportedImageRoles(messages: readonly Message[]): void {
+function assertSupportedImageRoles(messages: readonly RequestMessage[]): void {
   for (const message of messages) {
     if (message.role !== 'user' && !toolMessage(message) && contentHasImage(message.content)) {
       throw new LlmError(
@@ -84,16 +82,6 @@ async function userContent(
         })
         break
       }
-      case 'tool-result':
-        {
-          const nested = await userContent(block.content, requestImages, resolveImageAccess)
-          if (typeof nested === 'string') {
-            if (nested.length > 0) content.push({ type: 'text', text: nested })
-          } else {
-            content.push(...nested)
-          }
-        }
-        break
       default:
         // Other merge-extensible blocks are not user-input vocabulary for pi-ai.
         break
@@ -108,16 +96,12 @@ function collectImageRefs(
   refs: Map<AttachmentId, ImageAttachmentRef>,
 ): void {
   for (const block of blocks) {
-    if (block.type === 'image') {
-      if (block.offloaded !== true) refs.set(block.attachment.attachmentId, block.attachment)
-    } else if (block.type === 'tool-result') {
-      collectImageRefs(block.content, refs)
-    }
+    if (block.type === 'image' && block.offloaded !== true) refs.set(block.attachment.attachmentId, block.attachment)
   }
 }
 
 async function prepareRequestImages(
-  messages: readonly Message[],
+  messages: readonly RequestMessage[],
   attachments: AttachmentStore,
   budget: PiImageRequestBudget,
   signal?: AbortSignal,
@@ -150,7 +134,7 @@ interface SystemPromptSplit {
   /** Text for pi-ai's `systemPrompt`; `undefined` sends no system prompt. */
   systemPrompt: string | undefined
   /** History messages that convert to pi-ai `messages`. */
-  messages: readonly Message[]
+  messages: readonly RequestMessage[]
 }
 
 /**
@@ -221,21 +205,9 @@ function textOnlyContext(options: GenerateOptions, onReplayDegrade?: (reason: st
       continue
     }
     const text = flattenText(message)
-    const results = message.content.filter(block => block.type === 'tool-result')
-    if (text.length > 0 || results.length === 0) messages.push({ role: 'user', content: text, timestamp: 0 })
-    for (const result of results) {
-      messages.push({
-        role: 'toolResult',
-        toolCallId: result.toolCallId,
-        toolName: toolNames.get(result.toolCallId) ?? 'unknown',
-        content: [{
-          type: 'text',
-          text: toolResultText(result.content) || '(no output)',
-        }],
-        isError: result.isError ?? false,
-        timestamp: 0,
-      })
-    }
+    // DSH 0.1.7 carries every tool result as its own `tool`-role message, so a
+    // user message here is text and images only.
+    if (text.length > 0 || message.content.length === 0) messages.push({ role: 'user', content: text, timestamp: 0 })
   }
   return piContext(split.systemPrompt, options, messages)
 }
@@ -363,27 +335,11 @@ async function toPiContextWithImages(
       appendAssistant(message, messages, toolNames, onReplayDegrade)
       continue
     }
-    // user role: text + tool results (each result becomes its own message).
-    const regular = message.content.filter(block => block.type !== 'tool-result')
-    const content = await userContent(regular, requestImages, resolveImageAccess)
-    const results = message.content.filter((block): block is Extract<ContentBlock, { type: 'tool-result' }> => (
-      block.type === 'tool-result'
-    ))
-    if (content.length > 0 || results.length === 0) {
+    // user role: text and images. DSH 0.1.7 carries every tool result as its
+    // own `tool`-role message, handled above.
+    const content = await userContent(message.content, requestImages, resolveImageAccess)
+    if (content.length > 0 || message.content.length === 0) {
       messages.push({ role: 'user', content, timestamp: 0 })
-    }
-    for (const result of results) {
-      const resultContent = await userContent(result.content, requestImages, resolveImageAccess)
-      messages.push({
-        role: 'toolResult',
-        toolCallId: result.toolCallId,
-        toolName: toolNames.get(result.toolCallId) ?? 'unknown',
-        content: typeof resultContent === 'string'
-          ? [{ type: 'text', text: resultContent || '(no output)' }]
-          : resultContent,
-        isError: result.isError ?? false,
-        timestamp: 0,
-      })
     }
   }
 
