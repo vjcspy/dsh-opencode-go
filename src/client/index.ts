@@ -1,9 +1,11 @@
 /**
  * OpenCode Go settings plugin, browser half. Registers the "OpenCode Go"
- * settings page over the `llm-opencode-go` namespace: the API key (stored
- * write-only through the credentials domain), the gateway's current model
- * listing, and the adapter knobs behind the page's advanced disclosure. The
- * Host settings and credential contracts stay behind their existing wire APIs.
+ * settings page: the API key (stored write-only through the credentials
+ * domain), the gateway's current model listing, and the adapter knobs behind
+ * the page's advanced disclosure. On 0.1.7+ the page binds to the plugin's
+ * `opencode-go` profile-entry form through `configForms`; older hosts expose
+ * the `llm-opencode-go` namespace through the legacy `settingsScope`. The Host
+ * settings and credential contracts stay behind their existing wire APIs.
  */
 import type { Context as ClientContext } from '@deepseek-ai/cordis'
 // Type-only: pulls the shell's SlotMap merge (the 'settings.section' entry).

@@ -1,15 +1,15 @@
 /**
  * Dedicated OpenCode Go adapter plugin. Registers one `opencode-go` route
  * whose catalog follows the gateway's live model listing and models.dev
- * metadata, and installs the `llm-opencode-go` settings section: the Web UI
- * renders it as its own settings page where the API key and every knob are
- * edited, and a change reaches the next request without a restart. The plugin
- * exists because the gateway has wire requirements a generic pi-ai route
+ * metadata, and wires the Web UI settings page: the API key and every knob are
+ * edited there, and a change reaches the next request without a restart. The
+ * plugin exists because the gateway has wire requirements a generic pi-ai route
  * cannot express: a mandatory per-conversation `x-opencode-session` routing
  * header and a model list that rotates faster than any shipped catalog.
  *
- * DSH 0.1.5/0.1.6 layer the settings document over the composition entry;
- * 0.1.7 edits live configuration fields on the profile entry directly.
+ * DSH 0.1.5/0.1.6 install the settings section from the composition entry under
+ * the `llm-opencode-go` namespace; 0.1.7+ project the plugin's `opencode-go`
+ * profile entry as its own form and edit live configuration fields directly.
  *
  * ```yaml
  * - id: llm-opencode-go
@@ -31,7 +31,7 @@
  * @module dsh-opencode-go
  */
 
-import type { Context } from '@deepseek-ai/cordis'
+import type { Context, Fiber } from '@deepseek-ai/cordis'
 import { launchEnvironmentOf } from '@deepseek-ai/dsh-launch-environment'
 import { credentialRef } from '@deepseek-ai/dsh-credentials'
 import { LlmError, assertUsableApiKey, resolveImageAttachmentAccess } from '@deepseek-ai/dsh-llm'
@@ -74,6 +74,29 @@ export const inject = ['llm']
 
 /** Settings namespace this plugin installs and the Web page edits. */
 export const NS = 'llm-opencode-go'
+
+/**
+ * Settings service surface across host generations. DSH 0.1.7+ exposes
+ * `configure` and projects the plugin's own profile entry as its form; 0.1.5/0.1.6
+ * expose `installSection`, which registers a namespace from the composition
+ * entry. rc.1's `SettingsForms` type lacks `installSection`, so the older
+ * method is read structurally — the same technique the client half uses for
+ * the legacy `settingsScope`.
+ */
+interface SettingsCompat {
+  configure?: (policy: { auto: boolean }, owner: Fiber) => () => void
+  installSection?: (
+    owner: Context,
+    ns: string,
+    schema: typeof PlainConfig,
+    entry: OpencodeGoConfig,
+    hooks: {
+      validate: (value: OpencodeGoConfig) => void
+      setSource: (source: () => OpencodeGoConfig) => void
+      onChange: () => void
+    },
+  ) => void
+}
 
 /**
  * Register the route, its discovery, the settings section, and their
@@ -203,12 +226,32 @@ export function apply(ctx: Context, raw?: OpencodeGoConfig | LiveConfig): void {
     undiscover()
     /* v8 ignore stop */
   })
-  // Settings-backed configuration. rc.1 projects the plugin's volatile Config
-  // fields as its own entry form and commits a write into the live references;
-  // this plugin ships no generated page, so it opts out of one. Without a
-  // settings provider the plugin still loads and serves the entry.
+  // Settings-backed configuration. On 0.1.7+ the Loader projects the plugin's
+  // volatile Config fields as its own entry form and commits a write into the
+  // live references; this plugin ships no generated page, so it opts out of one.
+  // On 0.1.5/0.1.6 the settings provider installs a namespace from the
+  // composition entry instead, and its source sink and change notification
+  // drive the same `current`/`syncRoute` pair. Without a settings provider the
+  // plugin still loads and serves the entry.
   ctx.inject(['settings'], (settingsCtx) => {
-    settingsCtx.effect(() => settingsCtx.settings.configure({ auto: false }, ctx.fiber))
+    const settings = settingsCtx.settings as unknown as SettingsCompat
+    if (settings.configure !== undefined) {
+      settingsCtx.effect(() => settings.configure!({ auto: false }, ctx.fiber))
+      return
+    }
+    settings.installSection!(ctx, NS, PlainConfig, entry, {
+      validate: (value) => {
+        assertBaseURL(value.baseURL)
+      },
+      setSource: (source) => {
+        current = source
+      },
+      onChange: () => {
+        // The registered route set follows the credential the section names;
+        // every other fact is per-request and reaches it through `current`.
+        syncRoute()
+      },
+    })
   })
   // Validate before 0.1.7 persists a profile edit, then follow committed refs.
   ctx.on('internal/config', function (_raw, next) {
