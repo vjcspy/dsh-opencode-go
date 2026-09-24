@@ -53,7 +53,7 @@ it('uses independent model switches while keeping settings and existing requests
     gateway.pushCompletions({ events: textEvents })
     const chunks = []
     for await (const chunk of adapter.stream({ provider: 'opencode-go', model: 'old',
-      messages: [createUserMessage({ content: [{ type: 'text', text: 'hello' }], source: { kind: 'plugin', plugin: 'test' } })] })) chunks.push(chunk)
+      messages: [createUserMessage({ content: [{ type: 'text', text: 'hello' }], source: { kind: 'user' } })] })) chunks.push(chunk)
     expect(chunks.length).toBeGreaterThan(0)
     config.modelVisibility = {}
     metadataDown = true

@@ -108,7 +108,7 @@ describe('llm-opencode-go plugin mount', () => {
       model: 'deepseek-v4.1-flash',
       messages: [createUserMessage({
         content: [{ type: 'text', text: 'hi' }],
-        source: { kind: 'plugin', plugin: 'test' },
+        source: { kind: 'user' },
       })],
       sessionId: 'mounted-session' as never,
     })) chunks.push(chunk)
@@ -132,7 +132,7 @@ describe('llm-opencode-go plugin mount', () => {
       model: 'deepseek-v4.1-flash',
       messages: [createUserMessage({
         content: [{ type: 'text', text: 'hi' }],
-        source: { kind: 'plugin', plugin: 'test' },
+        source: { kind: 'user' },
       })],
       sessionId: 'default-effort' as never,
     })) { /* drain the stream: only the request body is asserted */ }
@@ -156,7 +156,7 @@ describe('llm-opencode-go plugin mount', () => {
       model: 'deepseek-v4.1-flash',
       messages: [createUserMessage({
         content: [{ type: 'text', text: 'hi' }],
-        source: { kind: 'plugin', plugin: 'test' },
+        source: { kind: 'user' },
       })],
     })) chunks.push(chunk)
 
@@ -182,7 +182,7 @@ describe('llm-opencode-go plugin mount', () => {
       model: 'deepseek-v4.1-flash',
       messages: [createUserMessage({
         content: [{ type: 'text', text: 'hi' }],
-        source: { kind: 'plugin', plugin: 'test' },
+        source: { kind: 'user' },
       })],
     })) chunks.push(chunk)
 
@@ -225,7 +225,7 @@ describe('llm-opencode-go plugin mount', () => {
       messages: [
         createUserMessage({
           content: [{ type: 'text', text: 'hi' }],
-          source: { kind: 'plugin', plugin: 'test' },
+          source: { kind: 'user' },
         }),
         {
           id: MessageId('m1'),
@@ -349,7 +349,7 @@ describe('llm-opencode-go plugin mount', () => {
       model: 'deepseek-v4.1-flash',
       messages: [createUserMessage({
         content: [{ type: 'image', attachment: ref }],
-        source: { kind: 'plugin', plugin: 'test' },
+        source: { kind: 'user' },
       })],
     })) chunks.push(chunk)
 

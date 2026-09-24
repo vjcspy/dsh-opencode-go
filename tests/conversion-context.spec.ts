@@ -67,11 +67,13 @@ function request(messages: GenerateOptions['messages']): GenerateOptions {
 }
 
 function user(content: ContentBlock[]): Message {
-  return createUserMessage({ content, source: { kind: 'plugin', plugin: 'test' } })
+  return createUserMessage({ content, source: { kind: 'user' } })
 }
 
 function history(role: 'system' | 'assistant', content: ContentBlock[]): Message {
-  return createMessage({ role, content, source: { kind: 'plugin', plugin: 'test' } })
+  return role === 'system'
+    ? createMessage({ role, content, source: { kind: 'system-prompt' } })
+    : createMessage({ role, content, source: { kind: 'model', provider: 'test', model: 'test' } })
 }
 
 describe('pi-ai request context conversion', () => {
@@ -565,5 +567,52 @@ describe('pi-ai system prompt source', () => {
     }
     expect(toPiContext(options)).toEqual(expected)
     await expect(toPiContext(options, imageContext(attachments))).resolves.toEqual(expected)
+  })
+})
+
+describe('pi-ai legacy and rc.1 unsupported history', () => {
+  it('converts a legacy nested tool-result block into a toolResult message', () => {
+    const callId = ToolCallId('legacy-call')
+    const context = toPiContext(request([
+      history('assistant', [{ type: 'tool-call', id: callId, name: 'lookup', arguments: '{}' }]),
+      user([
+        { type: 'text', text: 'after tool' },
+        { type: 'tool-result', toolCallId: callId, isError: true, content: [{ type: 'text', text: 'legacy failed' }] },
+      ]),
+    ]))
+    expect(context.messages).toEqual([
+      expect.objectContaining({ role: 'assistant' }),
+      { role: 'user', content: 'after tool', timestamp: 0 },
+      {
+        role: 'toolResult',
+        toolCallId: 'legacy-call',
+        toolName: 'lookup',
+        content: [{ type: 'text', text: 'legacy failed' }],
+        isError: true,
+        timestamp: 0,
+      },
+    ])
+  })
+
+  it('rejects a developer message on both conversion paths', async () => {
+    const developer = createMessage({ role: 'developer', content: [{ type: 'text', text: 'x' }], source: { kind: 'user' } })
+    const options = request([developer])
+    expect(() => toPiContext(options)).toThrow(/Developer messages/)
+    await expect(toPiContext(options, imageContext(attachments))).rejects.toMatchObject({ code: 'UNSUPPORTED_CONTENT' })
+  })
+
+  it('rejects tool-change blocks on both conversion paths', async () => {
+    const options = request([user([{ type: 'tool-addition', toolName: 'lookup' }])])
+    expect(() => toPiContext(options)).toThrow(/Tool-change blocks/)
+    await expect(toPiContext(options, imageContext(attachments))).rejects.toMatchObject({ code: 'UNSUPPORTED_CONTENT' })
+  })
+
+  it('rejects deferred tool loading on both conversion paths', async () => {
+    const options: GenerateOptions = {
+      ...request([user([{ type: 'text', text: 'hi' }])]),
+      tools: [{ name: 'lookup', description: 'look up', parameters: { type: 'object' }, deferLoading: true }],
+    }
+    expect(() => toPiContext(options)).toThrow(/Deferred tool loading/)
+    await expect(toPiContext(options, imageContext(attachments))).rejects.toMatchObject({ code: 'UNSUPPORTED_CONTENT' })
   })
 })

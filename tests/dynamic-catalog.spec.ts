@@ -95,7 +95,7 @@ describe('runtime model metadata', () => {
       for await (const _chunk of ctx.llm.stream({
         provider: 'opencode-go', model: 'fallback-model',
         messages: [createUserMessage({
-          content: [{ type: 'text', text: 'hi' }], source: { kind: 'plugin', plugin: 'test' },
+          content: [{ type: 'text', text: 'hi' }], source: { kind: 'user' },
         })],
       })) { /* Validate the request after DSH resolves its default effort. */ }
       expect(gateway.bodies[0]).toMatchObject({ thinking: { type: 'enabled' }, reasoning_effort: expected })
@@ -305,7 +305,7 @@ describe('new models use the declared protocol', () => {
     for await (const chunk of adapter.stream({
       provider: 'opencode-go', model: 'future-unseen-model', sessionId: 'new-model-session' as never,
       ...(cap === undefined ? {} : { maxTokens: 8192 }),
-      messages: [createUserMessage({ content: [{ type: 'text', text: 'hello' }], source: { kind: 'plugin', plugin: 'test' } })],
+      messages: [createUserMessage({ content: [{ type: 'text', text: 'hello' }], source: { kind: 'user' } })],
     })) chunks.push(chunk)
     expect(gateway.paths.map(value => new URL(value, gateway.url).pathname)).toEqual(['/v1/models', path])
     expect(gateway.bodies[0]).toMatchObject({ model: 'future-unseen-model' })

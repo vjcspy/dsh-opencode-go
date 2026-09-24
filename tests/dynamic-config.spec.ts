@@ -1,28 +1,22 @@
 /**
- * Settings-backed configuration: the `llm-opencode-go` section overrides the
- * cordis.yml entry field by field, a change reaches the next request without
- * a restart, and a refused write leaves the document untouched.
+ * Settings-backed configuration on DSH 0.1.7-rc.1: the plugin's own profile
+ * entry is its configuration form, a change reaches the next request without a
+ * restart, and a refused write leaves the entry untouched.
  */
 
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
-import { tmpdir } from 'node:os'
-import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
 import LlmRuntime from '@deepseek-ai/dsh-llm'
 import Gateway from '@deepseek-ai/dsh-api-gateway'
 import Registry from '@deepseek-ai/dsh-typert-registry'
 import { credentialRef } from '@deepseek-ai/dsh-credentials'
-import { LocalCredentialProvider } from '@deepseek-ai/dsh-credentials-local'
-import FileSettingsProvider from '@deepseek-ai/dsh-settings-file'
 import { apply } from '../src/index.ts'
 import { closeMockGateways, fullLiveListing, listingBody, mockGateway, textEvents } from './mock-gateway.ts'
 import { configOf } from './config-of.ts'
+import { bootProfile, ENTRY_ID, type ProfileFixture } from './support/profile-fixture.ts'
 import type { GoModelCatalog } from '../src/models-contract.ts'
 
 import { metadataDocument, modelMetadata, MODELS_METADATA_URL } from './support/model-metadata.ts'
-
-const NS = 'llm-opencode-go'
 
 const cleanups: Array<() => Promise<void>> = []
 
@@ -32,46 +26,11 @@ afterEach(async () => {
   vi.unstubAllEnvs()
 })
 
-async function home(): Promise<string> {
-  const dir = await mkdtemp(join(tmpdir(), 'dsh-opencode-go-dynamic-'))
-  cleanups.push(() => rm(dir, { recursive: true, force: true }))
-  return dir
-}
-
-/** The managed credential document's current layout: a versioned refs map. */
-function credentialsYaml(refs: Record<string, string>): string {
-  const rows = Object.entries(refs).map(([ref, value]) => `  ${ref}: ${value}`).join('\n')
-  return `version: 1\nrefs:\n${rows}\n`
-}
-
-interface BootOptions {
-  settingsYaml: string
-  credentials: Record<string, string>
-  baseURL: string
-}
-
-/** The plugin as a mountable cordis definition: `apply`'s named exports do not ride the function value. */
-function asPlugin(config?: unknown): { name: string; inject: string[]; apply: (ctx: Context) => void } {
-  return {
-    name: 'llm-opencode-go-test',
-    inject: ['llm'],
-    apply: (ctx: Context) => {
-      apply(ctx, config as never)
-    },
-  }
-}
-
-/** A whole composition: runtime, settings document, credential store, plugin. */
-async function boot(options: BootOptions): Promise<Context> {
-  const dir = await home()
-  await writeFile(join(dir, 'settings.yaml'), options.settingsYaml)
-  await writeFile(join(dir, '.credentials.yaml'), credentialsYaml(options.credentials), { mode: 0o600 })
-  const ctx = new Context()
-  await ctx.plugin(LlmRuntime)
-  await ctx.plugin(FileSettingsProvider, { path: join(dir, 'settings.yaml'), watch: false })
-  await ctx.plugin(LocalCredentialProvider, { path: join(dir, '.credentials.yaml'), watch: false })
-  await ctx.plugin(asPlugin({ baseURL: options.baseURL }))
-  return ctx
+/** Boot the plugin through the Loader and register teardown. */
+async function profile(options: Parameters<typeof bootProfile>[0] = {}): Promise<ProfileFixture> {
+  const fixture = await bootProfile(options)
+  cleanups.push(fixture.dispose)
+  return fixture
 }
 
 async function streamOnce(ctx: Context): Promise<void> {
@@ -87,11 +46,11 @@ async function streamOnce(ctx: Context): Promise<void> {
 }
 
 describe('settings-backed configuration', () => {
-  it('serves the cordis entry until the settings section supplies overrides', async () => {
+  it('serves the entry until the settings form supplies overrides', async () => {
     vi.stubEnv('OPENCODE_API_KEY', 'env-key')
     const gateway = await mockGateway({ status: 200, body: listingBody(fullLiveListing()) })
     gateway.pushCompletions({ events: textEvents })
-    const ctx = await boot({ settingsYaml: '', credentials: {}, baseURL: gateway.url })
+    const { ctx } = await profile({ config: { baseURL: gateway.url } })
 
     await streamOnce(ctx)
 
@@ -105,21 +64,16 @@ describe('settings-backed configuration', () => {
     const second = await mockGateway({ status: 200, body: listingBody(fullLiveListing()) })
     first.pushCompletions({ events: textEvents })
     second.pushCompletions({ events: textEvents })
-    const dir = await home()
-    const settingsPath = join(dir, 'settings.yaml')
-    await writeFile(settingsPath, '')
-    await writeFile(join(dir, '.credentials.yaml'), credentialsYaml({ CUSTOM_OPENCODE_REF: 'stored-key' }), { mode: 0o600 })
-    const ctx = new Context()
-    await ctx.plugin(LlmRuntime)
-    await ctx.plugin(FileSettingsProvider, { path: settingsPath, watch: false })
-    await ctx.plugin(LocalCredentialProvider, { path: join(dir, '.credentials.yaml'), watch: false })
-    await ctx.plugin(asPlugin({ baseURL: first.url }))
+    const { ctx } = await profile({
+      config: { baseURL: first.url },
+      credentials: { CUSTOM_OPENCODE_REF: 'stored-key' },
+    })
 
     await streamOnce(ctx)
     expect(first.paths).toHaveLength(2)
     expect(first.headers[1]?.authorization).toBe('Bearer env-key')
 
-    await ctx.settings.update(NS, { baseURL: second.url, apiKeyEnv: 'CUSTOM_OPENCODE_REF' })
+    await ctx.settings.update(ENTRY_ID, { baseURL: second.url, apiKeyEnv: 'CUSTOM_OPENCODE_REF' })
 
     await streamOnce(ctx)
 
@@ -131,14 +85,13 @@ describe('settings-backed configuration', () => {
     const gateway = await mockGateway({ status: 200, body: listingBody(fullLiveListing()) })
     gateway.pushCompletions({ events: textEvents })
     gateway.pushCompletions({ events: textEvents })
-    const ctx = await boot({
-      settingsYaml: '',
+    const { ctx } = await profile({
+      config: { baseURL: gateway.url },
       credentials: { OPENCODE_API_KEY: 'test-key' },
-      baseURL: gateway.url,
     })
 
     await streamOnce(ctx)
-    await ctx.settings.update(NS, { refreshMinutes: 30 })
+    await ctx.settings.update(ENTRY_ID, { refreshMinutes: 30 })
     await streamOnce(ctx)
 
     // Two catalog fetches on two different catalog generations (the change
@@ -149,10 +102,9 @@ describe('settings-backed configuration', () => {
 
   it('applies and removes per-model capacities without a restart', async () => {
     const gateway = await mockGateway({ status: 200, body: listingBody(fullLiveListing()) })
-    const ctx = await boot({
-      settingsYaml: '',
+    const { ctx } = await profile({
+      config: { baseURL: gateway.url },
       credentials: { OPENCODE_API_KEY: 'test-key' },
-      baseURL: gateway.url,
     })
     await expect.poll(() => ctx.llm.listProviders(), { timeout: 10_000 })
       .toContainEqual({ id: 'opencode-go', name: 'OpenCode Go' })
@@ -160,7 +112,7 @@ describe('settings-backed configuration', () => {
     const advertised = (await ctx.llm.resolveModelInfo('opencode-go', 'deepseek-v4.1-flash')).context?.contextWindow
     expect(advertised).toBeGreaterThan(0)
 
-    await ctx.settings.update(NS, {
+    await ctx.settings.update(ENTRY_ID, {
       modelLimits: { 'deepseek-v4.1-flash': { contextWindow: 123_456, maxTokens: 5_432 } },
     })
     expect((await ctx.llm.resolveModelInfo('opencode-go', 'deepseek-v4.1-flash')).context?.contextWindow)
@@ -168,7 +120,7 @@ describe('settings-backed configuration', () => {
 
     // `update` is merge-only, so use the documented replace path to remove the
     // user-layer field and let the catalog value re-inherit.
-    await ctx.settings.replace(NS, {})
+    await ctx.settings.replace(ENTRY_ID, {})
     expect((await ctx.llm.resolveModelInfo('opencode-go', 'deepseek-v4.1-flash')).context?.contextWindow)
       .toBe(advertised)
   })
@@ -176,10 +128,9 @@ describe('settings-backed configuration', () => {
   it('drops the route when the credential goes away, and revives it on return', async () => {
     const gateway = await mockGateway({ status: 200, body: listingBody(fullLiveListing()) })
     gateway.pushCompletions({ events: textEvents })
-    const ctx = await boot({
-      settingsYaml: '',
+    const { ctx } = await profile({
+      config: { baseURL: gateway.url },
       credentials: { OPENCODE_API_KEY: 'test-key' },
-      baseURL: gateway.url,
     })
     await streamOnce(ctx)
     expect(gateway.paths.filter(path => path === '/chat/completions')).toHaveLength(1)
@@ -249,25 +200,29 @@ describe('settings-backed configuration', () => {
       ? Promise.resolve(Response.json(metadataDocument({ old: modelMetadata({ status: 'deprecated' }) })))
       : original(input, init))
     const gateway = await mockGateway({ status: 200, body: listingBody(['old']) })
-    const ctx = await boot({ settingsYaml: '', credentials: { OPENCODE_API_KEY: 'test-key' }, baseURL: gateway.url })
+    const { ctx } = await profile({ config: { baseURL: gateway.url }, credentials: { OPENCODE_API_KEY: 'test-key' } })
     await expect.poll(() => ctx.llm.listProviders()).toContainEqual({ id: 'opencode-go', name: 'OpenCode Go' })
     expect(await ctx.llm.listModels('opencode-go')).toEqual([])
     const notify = vi.fn()
     ctx.on('llm/adapters-updated', notify)
-    await ctx.settings.update(NS, { modelVisibility: { old: true } })
+    await ctx.settings.update(ENTRY_ID, { modelVisibility: { old: true } })
     expect(notify).toHaveBeenCalled()
     expect((await ctx.llm.listModels('opencode-go')).map(m => m.id)).toEqual(['old'])
-    await ctx.settings.update(NS, { modelVisibility: { old: false } })
+    await ctx.settings.update(ENTRY_ID, { modelVisibility: { old: false } })
     expect(await ctx.llm.listModels('opencode-go')).toEqual([])
     expect(gateway.modelListings).toBe(1)
   })
 
   it('refreshes Settings and open pickers from one catalog snapshot, including failed refreshes', async () => {
     const gateway = await mockGateway({ status: 200, body: listingBody(['union-alpha']) })
-    const ctx = await boot({ settingsYaml: '', credentials: { OPENCODE_API_KEY: 'test-key' }, baseURL: gateway.url })
-    cleanups.push(() => ctx.fiber.dispose())
-    await ctx.plugin(Registry)
-    await ctx.plugin(Gateway)
+    const { ctx } = await profile({
+      config: { baseURL: gateway.url },
+      credentials: { OPENCODE_API_KEY: 'test-key' },
+      before: async (ctx) => {
+        await ctx.plugin(Registry)
+        await ctx.plugin(Gateway)
+      },
+    })
     await expect.poll(() => ctx.llm.listProviders()).toContainEqual({ id: 'opencode-go', name: 'OpenCode Go' })
     const pickerReads: Array<Promise<readonly { id: string }[]>> = []
     const notify = vi.fn(() => {
@@ -297,11 +252,11 @@ describe('settings-backed configuration', () => {
     expect(notify).toHaveBeenCalledTimes(3)
     expect(gateway.modelListings).toBe(3)
 
-    await ctx.settings.update(NS, { modelVisibility: { 'kimi-k3': false } })
+    await ctx.settings.update(ENTRY_ID, { modelVisibility: { 'kimi-k3': false } })
     expect(await pickerReads.at(-1)).toEqual([])
     expect(gateway.modelListings).toBe(3)
 
-    await ctx.settings.update(NS, { enabled: false })
+    await ctx.settings.update(ENTRY_ID, { enabled: false })
     const notifications = notify.mock.calls.length
     await read()
     expect(notify).toHaveBeenCalledTimes(notifications)
@@ -309,18 +264,18 @@ describe('settings-backed configuration', () => {
 
   it('persists individual model switches and notifies open legacy pickers without altering other models', async () => {
     const gateway = await mockGateway({ status: 200, body: listingBody(fullLiveListing()) })
-    const ctx = await boot({ settingsYaml: '', credentials: { OPENCODE_API_KEY: 'test-key' }, baseURL: gateway.url })
+    const { ctx } = await profile({ config: { baseURL: gateway.url }, credentials: { OPENCODE_API_KEY: 'test-key' } })
     await expect.poll(() => ctx.llm.listProviders()).toContainEqual({ id: 'opencode-go', name: 'OpenCode Go' })
     const notify = vi.fn()
     ctx.on('llm/adapters-updated', notify)
-    await ctx.settings.update(NS, { modelVisibility: { 'deepseek-v4.1-flash': false } })
+    await ctx.settings.update(ENTRY_ID, { modelVisibility: { 'deepseek-v4.1-flash': false } })
     expect(notify).toHaveBeenCalled()
     const otherModels = (await ctx.llm.listModels('opencode-go')).map(m => m.id)
     expect(otherModels).not.toContain('deepseek-v4.1-flash')
     expect(otherModels.length).toBeGreaterThan(0)
-    expect(ctx.settings.describe().find(row => row.ns === NS)?.value.modelVisibility).toEqual({ 'deepseek-v4.1-flash': false })
+    expect(ctx.settings.describe().find(row => row.ns === ENTRY_ID)?.value.modelVisibility).toEqual({ 'deepseek-v4.1-flash': false })
     notify.mockClear()
-    await ctx.settings.update(NS, { modelVisibility: { 'deepseek-v4.1-flash': true } })
+    await ctx.settings.update(ENTRY_ID, { modelVisibility: { 'deepseek-v4.1-flash': true } })
     expect(notify).toHaveBeenCalled()
     const restoredModels = (await ctx.llm.listModels('opencode-go')).map(m => m.id)
     expect(restoredModels).toContain('deepseek-v4.1-flash')
@@ -331,16 +286,15 @@ describe('settings-backed configuration', () => {
     const gateway = await mockGateway({ status: 200, body: listingBody(fullLiveListing()) })
     gateway.pushCompletions({ events: textEvents })
     gateway.pushCompletions({ events: textEvents })
-    const ctx = await boot({
-      settingsYaml: '',
+    const { ctx } = await profile({
+      config: { baseURL: gateway.url },
       credentials: { OPENCODE_API_KEY: 'test-key' },
-      baseURL: gateway.url,
     })
     await streamOnce(ctx)
     expect((await ctx.llm.listModels('opencode-go')).map(model => model.id)).toContain('deepseek-v4.1-flash')
 
     // The key stays configured throughout: only the switch decides.
-    await ctx.settings.update(NS, { enabled: false })
+    await ctx.settings.update(ENTRY_ID, { enabled: false })
 
     // Gone from the picker's source, not merely filtered at request time, and
     // nothing further reaches the gateway while it is off.
@@ -350,32 +304,26 @@ describe('settings-backed configuration', () => {
     expect(gateway.paths.filter(path => path === '/chat/completions')).toHaveLength(1)
 
     // The page that owns the switch keeps working while the route is gone.
-    expect(ctx.settings.describe().find(view => view.ns === NS)?.value)
+    expect(ctx.settings.describe().find(view => view.ns === ENTRY_ID)?.value)
       .toMatchObject({ enabled: false })
 
-    await ctx.settings.update(NS, { enabled: true })
+    await ctx.settings.update(ENTRY_ID, { enabled: true })
     await expect.poll(() => ctx.llm.listProviders(), { timeout: 10_000 })
       .toContainEqual({ id: 'opencode-go', name: 'OpenCode Go' })
     await streamOnce(ctx)
     expect(gateway.paths.filter(path => path === '/chat/completions')).toHaveLength(2)
   })
 
-  it('refuses a write whose baseURL is not usable, leaving the document untouched', async () => {
+  it('refuses a write whose baseURL is not usable, leaving the entry untouched', async () => {
     const gateway = await mockGateway({ status: 200, body: listingBody(fullLiveListing()) })
     gateway.pushCompletions({ events: textEvents })
-    const dir = await home()
-    const settingsPath = join(dir, 'settings.yaml')
-    await writeFile(settingsPath, '')
-    await writeFile(join(dir, '.credentials.yaml'), credentialsYaml({ OPENCODE_API_KEY: 'test-key' }), { mode: 0o600 })
-    const ctx = new Context()
-    await ctx.plugin(LlmRuntime)
-    await ctx.plugin(FileSettingsProvider, { path: settingsPath, watch: false })
-    await ctx.plugin(LocalCredentialProvider, { path: join(dir, '.credentials.yaml'), watch: false })
-    await ctx.plugin(asPlugin({ baseURL: gateway.url }))
+    const { ctx } = await profile({
+      config: { baseURL: gateway.url },
+      credentials: { OPENCODE_API_KEY: 'test-key' },
+    })
 
-    await expect(ctx.settings.update(NS, { baseURL: 'not-a-url' })).rejects.toThrow(/not a valid URL/)
+    await expect(ctx.settings.update(ENTRY_ID, { baseURL: 'not-a-url' })).rejects.toThrow(/not a valid URL/)
 
-    expect(await readFile(settingsPath, 'utf8')).toBe('')
     await streamOnce(ctx)
     expect(gateway.paths).toEqual(['/models', '/chat/completions'])
   })

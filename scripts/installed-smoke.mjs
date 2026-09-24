@@ -53,7 +53,7 @@ try {
   assert.ok(models.some(model => model.id === 'deepseek-v4.1-flash'))
   for (const sessionId of ['standalone-session-a', 'standalone-session-a', 'standalone-session-b']) {
     const chunks = []
-    for await (const chunk of ctx.llm.stream({ provider: 'opencode-go', model: 'deepseek-v4.1-flash', messages: [createUserMessage({ content: [{ type: 'text', text: 'hello' }], source: { kind: 'plugin', plugin: 'installed-smoke' } })], sessionId })) chunks.push(chunk)
+    for await (const chunk of ctx.llm.stream({ provider: 'opencode-go', model: 'deepseek-v4.1-flash', messages: [createUserMessage({ content: [{ type: 'text', text: 'hello' }], source: { kind: 'user' } })], sessionId })) chunks.push(chunk)
     assert.ok(chunks.some(chunk => chunk.type === 'text-delta' && chunk.text === 'standalone-ok'), JSON.stringify(chunks))
   }
   const completions = requests.filter(request => request.path === '/chat/completions')

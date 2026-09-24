@@ -122,7 +122,7 @@ describe('llm-opencode-go through a real Loader composition', () => {
       model: 'deepseek-v4.1-flash',
       messages: [createUserMessage({
         content: [{ type: 'text', text: 'hi' }],
-        source: { kind: 'plugin', plugin: 'loader-test' },
+        source: { kind: 'user' },
       })],
       sessionId: 'loader-session' as never,
     })) chunks.push(chunk)

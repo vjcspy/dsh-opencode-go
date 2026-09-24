@@ -86,7 +86,7 @@ try {
   for (const [model, effort, wire] of cases) {
     const request = { provider: 'opencode-go', model,
       messages: [llm.createUserMessage({ content: [{ type: 'text', text: 'hello' }],
-        source: { kind: 'plugin', plugin: 'reasoning-compat-test' } })],
+        source: { kind: 'user' } })],
       ...effort === undefined ? {} : { reasoningEffort: llm.ReasoningEffortId(effort) },
     }
     const expectedDefault = model === 'glm-5.3' ? undefined : 'high'

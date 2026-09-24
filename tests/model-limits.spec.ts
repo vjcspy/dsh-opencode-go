@@ -1,14 +1,9 @@
 import { afterEach, expect, it, vi } from 'vitest'
-import { Context } from '@deepseek-ai/cordis'
-import FileSettingsProvider from '@deepseek-ai/dsh-settings-file'
-import { mkdtemp, writeFile, rm } from 'node:fs/promises'
-import { tmpdir } from 'node:os'
-import { join } from 'node:path'
 import { OpencodeGoAdapter } from '../src/adapter.ts'
 import { discoverCatalogModels, discoverSettingsModels } from '../src/catalog.ts'
-import { PlainConfig } from '../src/config.ts'
 import { configOf } from './config-of.ts'
 import { closeMockGateways, listingBody, mockGateway, textEvents } from './mock-gateway.ts'
+import { bootProfile, ENTRY_ID } from './support/profile-fixture.ts'
 import { MODELS_METADATA_URL } from './support/model-metadata.ts'
 
 afterEach(closeMockGateways)
@@ -72,23 +67,24 @@ it('keeps capacities captured before an in-flight fetch across a settings change
   expect((await adapter.resolveModel('opencode-go', 'deepseek-v4.1-flash')).context?.contextWindow).toBe(42)
 })
 
-it('can explicitly return inherited profile capacities to the catalog', async () => {
-  const dir = await mkdtemp(join(tmpdir(), 'opencode-go-inherited-limits-'))
-  const ctx = new Context()
+it('can explicitly return a single inherited capacity to the catalog', async () => {
+  const gateway = await mockGateway({ status: 200, body: listingBody(['deepseek-v4.1-flash']) })
+  const { ctx, dispose } = await bootProfile({
+    config: { baseURL: gateway.url, modelLimits: { example: { contextWindow: 123456, maxTokens: 1024 } } },
+    credentials: { OPENCODE_API_KEY: 'test-key' },
+  })
   try {
-    const path = join(dir, 'settings.yaml')
-    await writeFile(path, '')
-    await ctx.plugin(FileSettingsProvider, { path, watch: false })
-    let current = () => PlainConfig({})
-    ctx.settings.installSection(ctx, 'llm-opencode-go', PlainConfig, PlainConfig({
-      modelLimits: { example: { contextWindow: 123456, maxTokens: 1024 } },
-    }), { setSource: source => { current = source }, onChange: () => {} })
-    await ctx.settings.mutate('llm-opencode-go', [{ op: 'set', path: ['modelLimits'], value: { example: { contextWindow: null } } }])
-    expect(current().modelLimits).toEqual({ example: { contextWindow: null, maxTokens: 1024 } })
-    await ctx.settings.mutate('llm-opencode-go', [{ op: 'set', path: ['modelLimits'], value: { example: null } }])
-    expect(current().modelLimits).toEqual({ example: null })
+    const limits = () => ctx.settings.describe().find(row => row.ns === ENTRY_ID)?.value.modelLimits
+    expect(limits()).toEqual({ example: { contextWindow: 123456, maxTokens: 1024 } })
+
+    // `null` selects the catalog value for one field without disturbing its sibling.
+    await ctx.settings.mutate(ENTRY_ID, [{ op: 'set', path: ['modelLimits', 'example', 'contextWindow'], value: null }])
+    expect(limits()).toEqual({ example: { contextWindow: null, maxTokens: 1024 } })
+
+    // A whole null entry selects both catalog values.
+    await ctx.settings.mutate(ENTRY_ID, [{ op: 'set', path: ['modelLimits', 'example'], value: null }])
+    expect(limits()).toEqual({ example: null })
   } finally {
-    await ctx.fiber.dispose()
-    await rm(dir, { recursive: true, force: true })
+    await dispose()
   }
 })

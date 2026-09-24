@@ -8,11 +8,14 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { useModernHost } from './modern-host.mjs'
 
-const modern = ['v017', 'v017-alpha2', 'v017-rc1', 'v017-rc2'].includes(process.argv[2])
-if (modern) {
+const pinned = ['v017', 'v017-alpha2', 'v017-rc1', 'v017-rc2'].includes(process.argv[2])
+if (pinned) {
   await useModernHost(process.argv[2])
   process.argv[2] = '@deepseek-ai/dsh-llm'
 }
+// Message-based tool results (0.1.7): the versioned 0.1.7 hosts and the
+// current devDependency. Older hosts nest a `tool-result` block.
+const modern = pinned || process.argv[2] === '@deepseek-ai/dsh-llm'
 const legacy = process.argv[2].startsWith('dsh-llm-v015')
 const llmURL = import.meta.resolve(process.argv[2])
 const aliased = process.argv[2].startsWith('dsh-llm-')
@@ -111,7 +114,7 @@ try {
     assert.deepEqual(reading, usage)
     assert.match(source, /^[0-9a-f-]{36}$/, 'opaque account identity survives the actual RPC codec')
   }
-  const user = content => llm.createUserMessage({ content, source: { kind: 'plugin', plugin: 'compat-test' } })
+  const user = content => llm.createUserMessage({ content, source: { kind: 'user' } })
   const request = messages => ({ provider: 'opencode-go', model: 'compat-model', messages, sessionId: 'compat-session' })
   const drain = async stream => { const chunks = []; for await (const chunk of stream) chunks.push(chunk); return chunks }
   const text = await drain(ctx.llm.stream({ ...request([user([{ type: 'text', text: 'hello' }])]), maxTokens: 8192 }))

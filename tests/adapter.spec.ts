@@ -32,7 +32,7 @@ function requestOf(overrides: Partial<GenerateOptions> = {}): GenerateOptions {
     model: 'deepseek-v4.1-flash',
     messages: [createUserMessage({
       content: [{ type: 'text', text: 'hi' }],
-      source: { kind: 'plugin', plugin: 'test' },
+      source: { kind: 'user' },
     })],
     ...overrides,
   }
@@ -262,7 +262,7 @@ describe('OpencodeGoAdapter stream', () => {
     history.messages = [
       createUserMessage({
         content: [{ type: 'text', text: 'hi' }],
-        source: { kind: 'plugin', plugin: 'test' },
+        source: { kind: 'user' },
       }),
       {
         id: MessageId('m1'),
@@ -323,7 +323,7 @@ describe('OpencodeGoAdapter stream', () => {
     const image = requestOf()
     image.messages = [createUserMessage({
       content: [{ type: 'image', attachment: IMAGE_REF }],
-      source: { kind: 'plugin', plugin: 'test' },
+      source: { kind: 'user' },
     })]
 
     await expect(drain(adapter.stream(image))).rejects.toMatchObject({ code: 'UNSUPPORTED_CONTENT' })
@@ -344,7 +344,7 @@ describe('OpencodeGoAdapter stream', () => {
     const image = requestOf()
     image.messages = [createUserMessage({
       content: [{ type: 'image', attachment: IMAGE_REF }],
-      source: { kind: 'plugin', plugin: 'test' },
+      source: { kind: 'user' },
     })]
 
     await expect(drain(adapter.stream(image))).rejects.toMatchObject({ code: 'UNSUPPORTED_CONTENT' })
@@ -358,7 +358,7 @@ describe('OpencodeGoAdapter stream', () => {
     const image = requestOf({ model: 'deepseek-v4-flash' })
     image.messages = [createUserMessage({
       content: [{ type: 'image', attachment: IMAGE_REF }],
-      source: { kind: 'plugin', plugin: 'test' },
+      source: { kind: 'user' },
     })]
 
     await expect(drain(adapter.stream(image))).rejects.toMatchObject({ code: 'UNSUPPORTED_CONTENT' })
