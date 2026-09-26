@@ -9,6 +9,7 @@ import { en } from '../src/client/locales.ts'
 import { stubSettingsScope } from './support/settings-scope.ts'
 import type { OpencodeGoSettings } from '../src/client/section-controller.ts'
 import type { SettingsScope } from '../src/client/settings.ts'
+import css from '../src/client/UsagePill.module.css'
 
 const usageSettings = (value: OpencodeGoSettings = {}) => {
   const host = stubSettingsScope<OpencodeGoSettings>()
@@ -142,6 +143,11 @@ it.each(['deepseek', 'opencode-go'])('shows plugin usage only on its route and s
   expect(read).not.toHaveBeenCalled()
   await act(async () => { store.set({ ...store.getSnapshot(), current: { provider: 'dsh-opencode-go', model: 'deepseek-v4-flash' } }) })
   expect(trigger().textContent).toContain(percentageLabel(usage))
+  expect(trigger().title).toBe(percentageLabel(usage))
+  expect(trigger().querySelector(`.${css.brand}`)?.textContent).toBe('Go · ')
+  expect(trigger().querySelectorAll(`.${css.unit}`)).toHaveLength(2)
+  expect(trigger().querySelector(`.${css.reading}`)?.hasAttribute('data-stale')).toBe(false)
+  expect(trigger().querySelector(`.${css.stale}`)).toBeNull()
   showDetails()
   expect(screen.getByRole('progressbar', { name: en.usage_monthly }).getAttribute('value')).toBe('7')
   await tick()
@@ -165,6 +171,9 @@ it('retains same-account percentages after a temporary failure and recovers thro
   await tick()
   expect(trigger().textContent).toContain(percentageLabel(usage))
   expect(trigger().textContent).toContain(en.usageStaleShort)
+  expect(trigger().title).toBe(`${percentageLabel(usage)} · ${en.usageStaleShort}`)
+  expect(trigger().querySelector(`.${css.reading}`)?.getAttribute('data-stale')).toBe('')
+  expect(trigger().querySelector(`.${css.stale}`)?.textContent).toContain(en.usageStaleShort)
   expect(lastUpdated()).toBe(firstUpdated)
   expect(screen.getAllByRole('progressbar')).toHaveLength(3)
   expect(screen.getByText(en.usageRefreshFailed)).toBeTruthy()
@@ -182,6 +191,9 @@ it('retains same-account percentages after a temporary failure and recovers thro
   await act(async () => { finishRetry(updated) })
   expect(trigger().textContent).toContain(percentageLabel(updated))
   expect(trigger().textContent).not.toContain(en.usageStaleShort)
+  expect(trigger().title).toBe(percentageLabel(updated))
+  expect(trigger().querySelector(`.${css.stale}`)).toBeNull()
+  expect(trigger().querySelector(`.${css.reading}`)?.hasAttribute('data-stale')).toBe(false)
   expect(screen.queryByText(en.usageStaleHint)).toBeNull()
   expect(screen.queryByText(transientMessage)).toBeNull()
   expect(lastUpdated()).not.toBe(firstUpdated)
@@ -205,6 +217,8 @@ it.each([
   expect(trigger().textContent).toContain(en.usageUnavailable)
   expect(trigger().textContent).not.toContain('%')
   expect(trigger().textContent).not.toContain(en.usageStaleShort)
+  expect(trigger().children).toHaveLength(0)
+  expect(trigger().title).toBe(trigger().textContent)
   showDetails()
   expect(screen.queryByRole('progressbar')).toBeNull()
   expect(screen.queryByText(en.usageStaleHint)).toBeNull()
@@ -216,6 +230,8 @@ it('shows the reason for the first failure without inventing cached usage and al
   await act(async () => { render(<UsagePill settings={settings} directory={directory('dsh-opencode-go')} readUsage={read} t={t} />) })
   expect(trigger().textContent).toContain(en.usageUnavailable)
   expect(trigger().textContent).not.toContain(en.usageStaleShort)
+  expect(trigger().children).toHaveLength(0)
+  expect(trigger().title).toBe(trigger().textContent)
   showDetails()
   expect(screen.queryByRole('progressbar')).toBeNull()
   expect(screen.getByText(transientMessage)).toBeTruthy()
@@ -232,6 +248,8 @@ it('clears cached usage for an unclassified error and does not display its raw m
   await tick()
   expect(trigger().textContent).toContain(en.usageUnavailable)
   expect(trigger().textContent).not.toContain('%')
+  expect(trigger().children).toHaveLength(0)
+  expect(trigger().title).toBe(trigger().textContent)
   showDetails()
   expect(screen.getByRole('alert').textContent).toContain(en.usageRefreshFailed)
   expect(screen.getByRole('alert').textContent).toContain(en.usageUnavailable)
