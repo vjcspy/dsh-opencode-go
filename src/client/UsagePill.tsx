@@ -99,9 +99,23 @@ function ActiveUsage({ readUsage, t, getLocale }: Omit<UsagePillProps, 'director
   const label = usage
     ? `Go · ${t('usageRollingShort')} ${usage.rolling.percent}% · ${t('usageWeekShort')} ${usage.weekly.percent}%${failure ? ` · ${t('usageStaleShort')}` : ''}`
     : `Go · ${failure ? t('usageUnavailable') : '…'}`
+  /** The segments concatenate to exactly `label`, so `textContent` stays the full string. The
+   * @container tiers in UsagePill.module.css hide `.brand`/`.unit`/`.stale` with `display: none`
+   * (jsdom does not evaluate container queries). Non-usage states render the plain label. */
+  const segments = usage
+    ? <>
+      <span className={css.brand}>Go · </span>
+      <span className={css.reading} data-stale={failure ? '' : undefined}>
+        <span className={css.unit}>{t('usageRollingShort')} </span>{usage.rolling.percent}%
+        {' · '}
+        <span className={css.unit}>{t('usageWeekShort')} </span>{usage.weekly.percent}%
+      </span>
+      {failure ? <span className={css.stale}> · {t('usageStaleShort')}</span> : null}
+    </>
+    : label
   return <span className={css.root} ref={root}>
     <button type="button" className={css.trigger} aria-expanded={open} aria-haspopup="dialog"
-      aria-label={`${t('usageTitle')}: ${label}`} onClick={() => { setOpen(!open) }}>{label}</button>
+      aria-label={`${t('usageTitle')}: ${label}`} title={label} onClick={() => { setOpen(!open) }}>{segments}</button>
     {open && <div className={css.panel} role="dialog" aria-label={t('usageTitle')} aria-busy={refreshing}>
       <strong>{t('usageTitle')}</strong>
       <p className={css.hint}>{t('usageHint')}</p>
